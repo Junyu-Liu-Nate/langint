@@ -86,6 +86,8 @@ def check_cfg_consistency(cfg1, cfg2, ignore_keys=None):
 
 
 def overwrite_cfg(cfg: Dict, key: str, value: Any, recursive=False, check_exists=True):
+    # print(f'cfg: {cfg}')
+    # print(f'key: {key}')
     if check_exists:
         assert key in cfg, key
     if key in cfg and recursive and isinstance(value, dict):

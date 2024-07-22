@@ -1,3 +1,6 @@
+import sys
+sys.path.insert(0, '/users/ljunyu/data/ljunyu/code/concept/deepfloyd/')
+
 from langint.utils.deepfloyd_no_diffusers import CACHE_DIR
 import torch.nn as nn
 from langint.third_party.deepfloyd.deepfloyd_if.model.nn import mean_flat
@@ -10,16 +13,24 @@ from typing import Union, List, Optional, Dict, Any
 import torch
 import os
 
+import wandb
+
 MODEL_NAME = 'IF-I-M-v1.0'
 
 
 class InvertDeepFloyd:
 
     def __init__(self):
+        ############# Load local models (save time) #############
+        if_I_path = "/users/ljunyu/data/ljunyu/code/concept/deepfloyd/" + MODEL_NAME + "/"
+        #########################################################
+        print('Check is initializing InvertDeepFloyd - IFStageI')
         if os.getenv('IF_I_FLOAT16') == '1':
-            self.if_I = IFStageI(MODEL_NAME, device='cuda', cache_dir=CACHE_DIR, model_kwargs={'precision': 16})
+            # self.if_I = IFStageI(MODEL_NAME, device='cuda', cache_dir=CACHE_DIR, model_kwargs={'precision': 16})
+            self.if_I = IFStageI(if_I_path, device='cuda', cache_dir=CACHE_DIR, model_kwargs={'precision': 16})
         else:
-            self.if_I = IFStageI(MODEL_NAME, device='cuda', cache_dir=CACHE_DIR, model_kwargs={'precision': 32})
+            # self.if_I = IFStageI(MODEL_NAME, device='cuda', cache_dir=CACHE_DIR, model_kwargs={'precision': 32})
+            self.if_I = IFStageI(if_I_path, device='cuda', cache_dir=CACHE_DIR, model_kwargs={'precision': 32})
         self.t5 = None
 
         self.if_I.model.requires_grad_(False)
@@ -83,6 +94,10 @@ class InvertDeepFloyd:
         writer.add_scalar('loss_terms/fruit_blip_loss', out['fruit_blip_loss'], out['iteration'])
         writer.add_scalar('loss_terms/color_blip_loss', out['color_blip_loss'], out['iteration'])
         writer.add_scalar('loss_terms/diff_loss', terms['loss'].mean().float(), out['iteration'])
+
+        ########### Added wand log observation ###########
+        wandb.log({"diffusion loss": terms['loss'].mean().float(), "loss_mse":terms['mse'].mean().float(), "loss_vb":terms['vb'].mean().float()})
+        wandb.log({"fruit_blip_loss": out['fruit_blip_loss'], "color_blip_loss": out['color_blip_loss']})
 
         return terms['loss'].mean() + out['fruit_blip_loss'] + out['color_blip_loss']
 

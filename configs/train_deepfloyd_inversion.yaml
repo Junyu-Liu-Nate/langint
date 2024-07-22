@@ -41,7 +41,7 @@ training:
     kwargs:
       visualize_every: 500
       eval_every: 500
-      max_it: 12000
+      max_it: 4000
   optimizers:
     embeddings:
       kwargs:

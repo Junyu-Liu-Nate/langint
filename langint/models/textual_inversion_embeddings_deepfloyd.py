@@ -14,15 +14,31 @@ logger = logging.getLogger(__name__)
 
 
 class Embeddings(nn.Module):
-    def __init__(self, num_placeholder_words: int, initializer_word: Optional[str], num_placeholder_groups: int = 2, shared_tokens=0, gt_init=0, blip_guidance=-1, fruit_blip_coeff=0, color_blip_coeff=0):
+    def __init__(self, 
+                 num_placeholder_words: int, 
+                 initializer_word: Optional[str], 
+                 num_placeholder_groups: int = 2, 
+                 shared_tokens=0, 
+                 gt_init=0, 
+                 blip_guidance=-1, 
+                 fruit_blip_coeff=0, 
+                 color_blip_coeff=0):
         super().__init__()
         self.blip_guidance = blip_guidance
         self.fruit_blip_coeff = fruit_blip_coeff
         self.color_blip_coeff = color_blip_coeff
+
+        logger.info('Check is initializing Embeddings - T5Embedder')
+        ############# Load local models (save time) #############
+        t5_path="/users/ljunyu/data/ljunyu/code/concept/deepfloyd/t5-v1_1-xxl/"
+        t5_cache_path="/users/ljunyu/data/ljunyu/code/concept/deepfloyd/"
+        #########################################################
         if os.getenv('T5_BFLOAT16') == '1':
-            self.t5 = t5 = T5Embedder(device='cuda', cache_dir=CACHE_DIR, torch_dtype=torch.bfloat16)
+            # self.t5 = t5 = T5Embedder(device='cuda', cache_dir=CACHE_DIR, torch_dtype=torch.bfloat16)
+            self.t5 = t5 = T5Embedder(device='cuda', dir_or_name=t5_path, cache_dir=t5_cache_path, torch_dtype=torch.bfloat16)
         else:
-            self.t5 = t5 = T5Embedder(device='cuda', cache_dir=CACHE_DIR, torch_dtype=torch.float32)
+            # self.t5 = t5 = T5Embedder(device='cuda', cache_dir=CACHE_DIR, torch_dtype=torch.float32)
+            self.t5 = t5 = T5Embedder(device='cuda', dir_or_name=t5_path, cache_dir=t5_cache_path, torch_dtype=torch.float32)
         tokenizer = t5.tokenizer
         text_encoder = t5.model
 
@@ -31,7 +47,7 @@ class Embeddings(nn.Module):
         assert num_placeholder_groups == 2, num_placeholder_groups
 
         num_placeholder_tokens = num_placeholder_words * num_placeholder_groups
-        print('num_placeholder_words, groups, tokens', num_placeholder_words, num_placeholder_groups, num_placeholder_tokens)
+        logger.info(f'num_placeholder_words: {num_placeholder_words}, num_placeholder_groups: {num_placeholder_groups}, num_placeholder_tokens: {num_placeholder_tokens}')
         assert initializer_word is None, initializer_word
 
         # get placeholder token (string) and token id (indices in the embedding)
@@ -39,6 +55,8 @@ class Embeddings(nn.Module):
         for placeholder_token in placeholder_tokens:
             assert t5.text_preprocessing(placeholder_token) == placeholder_token, (placeholder_token, t5.text_preprocessing(placeholder_token))
 
+        ### Add new special tokens into the t5 tokenizer!
+        ### Not swapping existing tokens!
         # https://huggingface.co/docs/transformers/v4.29.1/en/internal/tokenization_utils#transformers.SpecialTokensMixin.add_tokens
         num_added_tokens = tokenizer.add_tokens(placeholder_tokens)
         if num_added_tokens != len(placeholder_tokens):
@@ -53,6 +71,7 @@ class Embeddings(nn.Module):
         logger.info(f'placeholder token ids: {str(placeholder_token_ids)}')
         logger.info(f'placeholder tokens recon: {str(tokenizer.convert_ids_to_tokens(placeholder_token_ids))}')
 
+        ### Initialize the embeddings for the placeholder (newly added) tokens
         # get initializing token (string) and token id (indices in the embedding)
         assert initializer_word is None
         initializer_embs = []
@@ -108,6 +127,9 @@ class Embeddings(nn.Module):
             placeholder_tokens[ind]: placeholder_token_ids[ind]
             for ind in range(num_placeholder_tokens)
         }
+        logger.info(f'self.trainable_embeddings: {self.trainable_embeddings}')
+        logger.info(f'self.initial_embeddings: {self.initial_embeddings}')
+        logger.info(f'self.placeholder_token_to_id: {self.placeholder_token_to_id}')
 
         self.num_placeholder_groups = num_placeholder_groups
         self.num_placeholder_words = num_placeholder_words
@@ -126,7 +148,7 @@ class Embeddings(nn.Module):
 
         self.blip_mse_loss = nn.MSELoss()
 
-
+        logger.info('Finish checking __init__ for Embedding\n')
 
     def _pass_through_layers(self, x, data):
         outputs = []
@@ -158,9 +180,13 @@ class Embeddings(nn.Module):
 
 
     def _process_clip_features(self, data, tokenizer, text_encoder):
+        logger.info('Checking input variables for _process_clip_features: ')
+        # logger.info(f'data: {data}')
+
         blip_word_dict = {}
         assert len(data['blip_color']) == len(data['prompt']), (data['blip_color'], data['prompt'])
 
+        ### Get gt embedding for blip words from t5 vocabulary
         ph_words_by_prompt = []
         for i in range(len(data['prompt'])):
             prompt = data['prompt'][i]
@@ -169,13 +195,13 @@ class Embeddings(nn.Module):
             for word in words:
                 if word in self.trainable_embeddings:
                     _, number = word.split("mytoken")
-                    if int(number) % 2 == 0: 
+                    if int(number) % 2 == 0: ### The even number named tokens are for fruits
                         ph_words_for_curr_prompt[0] = word
                         blip_fruit_token = tokenizer.encode(data['blip_fruit'][i], add_special_tokens=False)
                         blip_fruit_emb = text_encoder.get_input_embeddings().weight.data[blip_fruit_token].clone()
                         assert len(blip_fruit_emb) == 1, (len(blip_fruit_emb), data['blip_fruit'][i], word)
                         blip_word_dict[word] = blip_fruit_emb[0]
-                    else:
+                    else: ### The odd number named tokens are for colors
                         ph_words_for_curr_prompt[1] = word
                         blip_color_token = tokenizer.encode(data['blip_color'][i], add_special_tokens=False)
                         blip_color_emb = text_encoder.get_input_embeddings().weight.data[blip_color_token].clone()
@@ -185,6 +211,7 @@ class Embeddings(nn.Module):
             assert ph_words_for_curr_prompt[1] != None, prompt 
             ph_words_by_prompt.append(ph_words_for_curr_prompt)
         assert len(ph_words_by_prompt) == len(data['clip_feature']), (len(ph_words_by_prompt), len(data['clip_feature']))
+        logger.info(f'ph_words_by_prompt: {ph_words_by_prompt}')
 
         assert len(data['clip_feature']) == len(data['prompt']), (len(data['clip_feature']), len(data['prompt']))
         x = data['clip_feature'].clone().to('cuda')
@@ -192,8 +219,10 @@ class Embeddings(nn.Module):
         
         assert len(ph_words_by_prompt) == len(x), (len(ph_words_by_prompt), len(x))
 
+        ### Create a clone of current placeholder words embeddings - used later to calculate BLIP loss
         temp_ph_word_dict = {}
 
+        ### Replace the corresponding entry of trainable_embeddings with the clip encoder output
         for ph_words, emb in zip(ph_words_by_prompt, x):
             assert len(emb) == len(ph_words) == 2, (len(emb), len(ph_words), ph_words)
             ph_fruit, ph_color = ph_words
@@ -207,9 +236,14 @@ class Embeddings(nn.Module):
             self.trainable_embeddings[ph_color] = nn.Parameter(emb_color.to(torch.bfloat16).clone())
             temp_ph_word_dict[ph_color] = emb_color.to(torch.bfloat16)
 
+        logger.info('Finish checking _process_clip_features\n')
         return temp_ph_word_dict, blip_word_dict
 
     def _get_text_embeddings(self, texts, t5, tokenizer, model, data):
+        logger.info('Checking input variables for_get_text_embeddings: ')
+        logger.info(f'texts: {texts}')
+        # logger.info(f'data: {data}\n')
+
         texts = [t5.text_preprocessing(text) for text in texts]
         text_tokens_and_mask = tokenizer(
             texts,
@@ -222,18 +256,21 @@ class Embeddings(nn.Module):
         )
         text_tokens_and_mask['input_ids'] = text_tokens_and_mask['input_ids']
         text_tokens_and_mask['attention_mask'] = text_tokens_and_mask['attention_mask']
+        # logger.info(f'text_tokens_and_mask: {text_tokens_and_mask}')
 
         # https://github.com/huggingface/transformers/blob/4b6aecb48e4961efef9edb8062dbbdd1f3d9385e/src/transformers/models/t5/modeling_t5.py#L1900
         input_ids = text_tokens_and_mask['input_ids'].cuda()  # (bs, max_length=77)
         with torch.no_grad():
             # https://github.com/huggingface/transformers/blob/4b6aecb48e4961efef9edb8062dbbdd1f3d9385e/src/transformers/models/t5/modeling_t5.py#L943
             inputs_embeds = model.shared(input_ids)
+        # logger.info(f'inputs_embeds: {inputs_embeds}')
 
 
         if self.training:
             temp_ph_word_dict, blip_word_dict = self._process_clip_features(data, tokenizer, model)
         fruit_blip_loss = []
         color_blip_loss = []
+        ### Replace the embeddings of ph words in the whole text (sentence) embeddings and calculate blip loss
         for i in range(len(self.placeholder_token_to_id)):
             token = f'mytoken{i}'
             assert token in self.placeholder_token_to_id, (token, self.placeholder_token_to_id)
@@ -327,7 +364,7 @@ class Embeddings(nn.Module):
             for word in words:
                 if word in self.trainable_embeddings:
                     _, number = word.split("mytoken")
-                    ph_words_for_curr_prompt[int(number) % 2] = word
+                    ph_words_for_curr_prompt[int(number) % 2] = word ### Even idx is fruit, odd idx is color
             ph_words_by_prompt.append(ph_words_for_curr_prompt)
         assert len(ph_words_by_prompt) == len(data['clip_feature']), (len(ph_words_by_prompt), len(data['clip_feature']))
 
@@ -348,11 +385,14 @@ class Embeddings(nn.Module):
             if ph_color != None:
                 temp_ph_word_dict[ph_color] = emb_color.to(torch.bfloat16)
         
+        ### Replace the embeddings
         for i in range(len(self.placeholder_token_to_id)):
             token = f'mytoken{i}'
             token_id = self.placeholder_token_to_id[token]
             if token_id in input_ids:
                 inputs_embeds[input_ids == token_id] = temp_ph_word_dict[token]
+
+        ### Generate conditioning vector from t5 using the replaced embeddings
         text_encoder_embs = model(
             inputs_embeds=inputs_embeds,
             input_ids=None,

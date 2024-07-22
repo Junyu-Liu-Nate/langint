@@ -1,3 +1,6 @@
+import sys
+sys.path.insert(0, '/users/ljunyu/data/ljunyu/code/concept/deepfloyd/')
+
 # from langint.common import named_datasets
 import torch.distributed as dist
 import torch
@@ -12,6 +15,8 @@ from tu.train_setup import open_tensorboard, set_seed_benchmark, setup_ddp_safe,
 from tu.utils.config import overwrite_cfg
 from tu.trainers.simple_trainer import load_checkpoint
 
+import wandb
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +25,17 @@ def main():
     rank = setup_ddp_safe()
     if os.getenv('DEBUG') == '1':
         torch.autograd.set_detect_anomaly(True)
+
+    now = datetime.now()
+    date_time_string = now.strftime("%Y-%m-%d-%H-%M")
     
 
     print('--------------------------------------------before parser-----------------------------------------------------')
     parser = get_parser()
     args = parser.parse_args()
+
+    # Initialize wandb
+    wandb.init(project='langint-official', entity='ljunyu', name='train_two' + '_' + date_time_string, config=args)
 
     print('--------------------------------------------before logger -----------------------------------------------------')
 

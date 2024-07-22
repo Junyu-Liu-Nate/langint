@@ -61,11 +61,9 @@ class Synthetic(torch.utils.data.Dataset):
 
         return {'image': image, 'prompt': prompt}
 
-
 def glide_sample_prompt(pipeline, prompt: str, num_repeats=4):
     images: torch.Tensor = pipeline.sample(prompt, batch_size=num_repeats).cpu()
     return images
-
 
 def glide_sample_prompts(prompts: List[str], num_repeats=4) -> torch.Tensor:
     from langint.utils.glide import GLIDEPipeline
@@ -78,14 +76,20 @@ def glide_sample_prompts(prompts: List[str], num_repeats=4) -> torch.Tensor:
     del pipeline
     return torch.cat(images_all)
 
-
+### Use DeepFloyd to generate images from prompts, and get answers from BLIP
 def deepfloyd_sample_prompts(prompts: List[str], num_repeats=4, model=None, processor=None, blip_fruit_q=None, blip_color_q=None):
     from langint.utils.deepfloyd_no_diffusers import Pipeline
     pipeline = Pipeline()
     images_all: List[Image.Image] = []
     blip_common_fruits = []
     blip_common_colors = []
-    for prompt in prompts:
+
+    ### Save to visualize the generated images
+    img_save_path = os.path.join('/users/ljunyu/data/ljunyu/code/concept/langint-train-two/cache', 'deepfloyd_img')
+    if not os.path.exists(img_save_path):
+        os.makedirs(img_save_path)
+
+    for prompt_idx, prompt in enumerate(prompts):
         images: List[Image.Image] = pipeline.dream(prompt, count=num_repeats)
         images_all.extend(images)
 
@@ -93,9 +97,10 @@ def deepfloyd_sample_prompts(prompts: List[str], num_repeats=4, model=None, proc
             blip_fruits = []
             blip_colors = [] # blip process the images here
             for image_i in range(len(images)):
-                
                 image = images[image_i]
                 assert image.mode == 'RGB', image.mode
+
+                image.save(os.path.join(img_save_path, str(prompt_idx) + '_' + str(image_i) + '.png'))
 
                 inputs = processor(image, blip_fruit_q, return_tensors="pt").to("cuda", torch.float16)
                 blip_out = model.generate(**inputs)
@@ -139,7 +144,6 @@ def cache_deepfloyd_samples(prompts: List[str], num_repeats=4) -> torch.Tensor:
         del pipeline
     return image_paths_all
 
-
 def load_deepfloyd_samples(prompts: List[str], num_repeats=4):
     logger.info('loading deepfloyd samples from cache...')
     image_paths = cache_deepfloyd_samples(prompts, num_repeats)
@@ -172,26 +176,43 @@ class SyntheticBiLevel(torch.utils.data.Dataset):
     def __init__(self, data_root: str,
                  templates: Dict,
                  num_data_per_prompt: int = 8, num_data_copies: int = 1, num_tokens_per_word: int = 1,
-                 num_placeholder_words: int = 35, num_placeholder_groups: int = 2, shared_tokens=0): 
+                 num_placeholder_words: int = 22, num_placeholder_groups: int = 2, shared_tokens=0): 
         
         assert shared_tokens in [0, 1], shared_tokens
 
         device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
+
+        logger.info('Check input variables:')
+        logger.info(f'data_root: {data_root}')
+        logger.info(f'templates: {templates}')
+        logger.info(f'num_data_per_prompt: {num_data_per_prompt}')
+        logger.info(f'num_data_copies: {num_data_copies}')
+        logger.info(f'num_tokens_per_word: {num_tokens_per_word}')
+        logger.info(f'num_placeholder_words: {num_placeholder_words}')
+        logger.info(f'num_placeholder_groups: {num_placeholder_groups}')
+        logger.info(f'shared_tokens: {shared_tokens}')
+        logger.info('')
         
-        processor = Blip2Processor.from_pretrained("Salesforce/blip2-flan-t5-xl")
-        model = Blip2ForConditionalGeneration.from_pretrained("Salesforce/blip2-flan-t5-xl", load_in_8bit=True, device_map="auto")
+        ###################### Load BLIP models, generate images using DeepFloyd, get BLIP answers ######################
+        logger.info('Check is initializing SyntheticBiLevel - BLIP')
+        blip_path = '/users/ljunyu/data/ljunyu/code/concept/langint-train-two/cache/blip2-flan-t5-xl'
+        # processor = Blip2Processor.from_pretrained("Salesforce/blip2-flan-t5-xl")
+        # model = Blip2ForConditionalGeneration.from_pretrained("Salesforce/blip2-flan-t5-xl", load_in_8bit=True, device_map="auto")
+        processor = Blip2Processor.from_pretrained(blip_path)
+        model = Blip2ForConditionalGeneration.from_pretrained(blip_path , load_in_8bit=True, device_map="auto")
         # we limit it to words which are known to have corresponding t5 embeddings which are one token long
-        blip_fruit_question = "Which of these is the fruit in the photo: cherry, apple, banana, mango, strawberry, pineapple, lemon, or raspberry?"
-        blip_color_question = "Which of these is the color of the fruit in the photo: red, blue, green, purple, yellow, orange, or black?"
-
-
-
+        # blip_fruit_question = "Which of these is the fruit in the photo: cherry, apple, banana, mango, strawberry, pineapple, lemon, or raspberry?"
+        # blip_color_question = "Which of these is the color of the fruit in the photo: red, blue, green, purple, yellow, orange, or black?"
+        blip_fruit_question = "Which of these is the type of car in the photo: sports, van, muscle, wagon, race, truck, coupe, or limousine?"
+        blip_color_question = "Which of these is the color of the car in the photo: red, blue, green, purple, yellow, orange, or black?"
 
         self.templates = build_from_config(templates)
-
+        logger.info(f'Templates after build_from_config: {self.templates}')
+        
         ground_truth_words = data_root.split(",")
         ground_truth_words = [word.replace('_', " ") for word in ground_truth_words]
         ground_truth_words = [word.split('-') for word in ground_truth_words] # [['apple', 'green'], ['apple', 'red'], ...]
+        logger.info(f'ground_truth_words: {ground_truth_words}')
         assert len(ground_truth_words) == num_placeholder_words, (ground_truth_words, len(ground_truth_words), num_placeholder_words)
         ground_truth_prompt_args = [[] for i in range(num_placeholder_groups)]
         for split_word in ground_truth_words:
@@ -199,9 +220,12 @@ class SyntheticBiLevel(torch.utils.data.Dataset):
             for i in range(num_placeholder_groups):
                 ground_truth_prompt_args[i].append(split_word[i])
                 # now we have [apple, apple, banana, banana] and [green, red, green, yellow]
+        logger.info(f'ground_truth_prompt_args: {ground_truth_prompt_args}')
 
         self.ground_truth_prompt_args = ground_truth_prompt_args
         self.unique_gt_words = ground_truth_words
+        # print(self.unique_gt_words)
+        # print(num_placeholder_groups)
         for gt_word in self.unique_gt_words:
             assert len(gt_word) == num_placeholder_groups
 
@@ -212,17 +236,26 @@ class SyntheticBiLevel(torch.utils.data.Dataset):
                 curr_prompt_words.append(ground_truth_prompt_arg[ind])
             prompt = self.templates[0].format(*curr_prompt_words)
             unique_prompts.append(prompt)
+        logger.info(f'unique_prompts: {unique_prompts}')
         self.gt_prompts: List[str] = unique_prompts
-        self.images, self.blip_colors, self.blip_fruits, pil_images = deepfloyd_sample_prompts(unique_prompts, num_repeats=num_data_per_prompt, model=model, processor=processor, blip_fruit_q=blip_fruit_question, blip_color_q=blip_color_question)      
+        self.images, self.blip_colors, self.blip_fruits, pil_images = deepfloyd_sample_prompts(unique_prompts, num_repeats=num_data_per_prompt, model=model, processor=processor, blip_fruit_q=blip_fruit_question, blip_color_q=blip_color_question)   
+        # logger.info(f'After deepfloyd_sample_prompts, self.images: {self.images}')
+        logger.info(f'After deepfloyd_sample_prompts, self.blip_colors: {self.blip_colors}')
+        logger.info(f'After deepfloyd_sample_prompts, self.blip_fruits: {self.blip_fruits}')
+        # logger.info(f'After deepfloyd_sample_prompts, self.pil_images: {self.pil_images}')
         
         # we limit it to words which are known to have corresponding t5 embeddings which are one token long
+        ### Note: Need to change here to restrict BLIP answers
         new_blip_fruits = []
         for i in range(len(self.blip_fruits)):
-            to_append = 'fruit'
-            for x in ['cherry', 'apple', 'banana', 'mango', 'strawberry', 'pineapple', 'lemon', 'raspberry']:
+            # to_append = 'fruit'
+            # for x in ['cherry', 'apple', 'banana', 'mango', 'strawberry', 'pineapple', 'lemon', 'raspberry']:
+            to_append = 'car'
+            for x in ['sports', 'van', 'muscle', 'wagon', 'race', 'truck', 'coupe', 'limousine']:
                 if x in self.blip_fruits[i]:
                     to_append = x
             new_blip_fruits.append(to_append)
+        logger.info(f'new_blip_fruits: {new_blip_fruits}')
 
         new_blip_colors = []
         for i in range(len(self.blip_colors)):
@@ -231,6 +264,7 @@ class SyntheticBiLevel(torch.utils.data.Dataset):
                 if x in self.blip_colors[i]:
                     to_append = x
             new_blip_colors.append(to_append)
+        logger.info(f'new_blip_colors: {new_blip_colors}')
 
         self.blip_fruits = new_blip_fruits
         self.blip_colors = new_blip_colors
@@ -238,8 +272,15 @@ class SyntheticBiLevel(torch.utils.data.Dataset):
         del processor
         del model
         torch.cuda.empty_cache()
+        logger.info('')
+        #########################################################################################################
 
-        clip_vision = CLIPVisionModel.from_pretrained("openai/clip-vit-large-patch14").to("cuda").requires_grad_(False)
+        ###################### Load CLIP model and get CLIP features from generated images ######################
+        #### Load local CLIP models (save time)
+        clip_path = "/users/ljunyu/data/ljunyu/code/concept/deepfloyd/clip-vit-large-patch14"
+        logger.info('Check is initializing CLIP - CLIP')
+        # clip_vision = CLIPVisionModel.from_pretrained("openai/clip-vit-large-patch14").to("cuda").requires_grad_(False)
+        clip_vision = CLIPVisionModel.from_pretrained(clip_path).to("cuda").requires_grad_(False)
         def clip_preprocess(x):
             x = kornia.geometry.resize(
                 x, (clip_vision.config.image_size, clip_vision.config.image_size), interpolation='bicubic', align_corners=True, antialias=False
@@ -249,6 +290,7 @@ class SyntheticBiLevel(torch.utils.data.Dataset):
             x = kornia.enhance.normalize(x, torch.Tensor([0.48145466, 0.4578275, 0.40821073]), torch.Tensor([0.26862954, 0.26130258, 0.27577711]))
             return x
 
+        ##### Generate CLIP features from the generated images
         preprocessed_images = self.images.to("cuda")
         preprocessed_images = clip_preprocess(preprocessed_images)
 
@@ -267,22 +309,31 @@ class SyntheticBiLevel(torch.utils.data.Dataset):
         for i in range(len(self.clip_features)):
             assert self.clip_features[i].shape == (3, 12, 1024)
         assert len(self.clip_features) == len(self.images), (len(self.clip_features), len(self.images))
-
-        inference_input = 'apple-red'
+        
+        ##### Inference input defined here; generate inference images
+        ##### Note: why? need further check
+        # inference_input = 'apple-red'
+        inference_input = 'sports-red'
         inf_data = inference_input.split(",")
         inf_data = [word.replace('_', " ") for word in inf_data]
         inf_data = [word.split('-') for word in inf_data] # [['apple', 'green'], ['apple', 'red'], ...]
+        logger.info(f'inf_data: {inf_data}')
 
         inf_ph_tokens = [[f'mytoken{2*i}', f'mytoken{2*i + 1}'] for i in range(len(inf_data))]
+        logger.info(f'inf_ph_tokens: {inf_ph_tokens}')
 
         assert len(inf_data) == len(inf_ph_tokens), (len(inf_data), len(inf_ph_tokens), inf_data, inf_ph_tokens)
 
         self.inf_gt_prompts = [self.templates[0].format(*pair) for pair in inf_data]
+        logger.info(f'self.inf_gt_prompts: {self.inf_gt_prompts}')
 
         self.inf_prompts = [self.templates[0].format(*inf_ph_tokens[i]) for i in range(len(inf_data))]
+        logger.info(f'self.inf_prompts: {self.inf_prompts}')
 
         self.inf_fruit_prompts = [imagenet_templates_small[0].format(pair[0]) for pair in inf_ph_tokens]
         self.inf_color_prompts = ['a photo of the color {}'.format(pair[1]) for pair in inf_ph_tokens]
+        logger.info(f'self.inf_fruit_prompts: {self.inf_fruit_prompts}')
+        logger.info(f'self.inf_color_prompts: {self.inf_color_prompts}')
 
         self.inf_images, _, _, inf_pil_images = deepfloyd_sample_prompts(self.inf_gt_prompts, num_repeats=1)
 
@@ -312,11 +363,18 @@ class SyntheticBiLevel(torch.utils.data.Dataset):
             'color_prompt': self.inf_color_prompts,
             'clip_feature': [feat for feat in self.inf_clip_features],
         }
-
+        logger.info(f'self.inf_dict: {self.inf_dict}')
 
         del clip_vision
         torch.cuda.empty_cache()
+        logger.info('')
+        #########################################################################################################
 
+        ###################### Prepare placeholder words and prompts ######################
+        ##### Note: the idea here is to use a fixed size of all possible instances of a concept,
+        #####       and then use a placeholder word for each instance.
+        #####       e.g, for "color" concept: "red" has a placeholder word, "blue" has another, etc.
+        
         self.num_placeholder_words = num_placeholder_words*num_tokens_per_word
         num_placeholder_tokens = num_placeholder_words*num_tokens_per_word*num_placeholder_groups
         placeholder_words = [] #['mytoken0', 'mytoken1', 'mytoken0', ...., ]
@@ -327,6 +385,8 @@ class SyntheticBiLevel(torch.utils.data.Dataset):
             curr_fruit = ground_truth_words[i][0]
             if shared_tokens == 1:
                 # the category token is shared across different instances of the same category
+                ### Note: here is where whether duplicate tokens are used!
+                ###       But why not having such option for color as well???
                 if curr_fruit not in fruit_dict:
                     fruit_dict[curr_fruit] = f'mytoken{fruit_count}'
                     fruit_count += 2
@@ -336,20 +396,28 @@ class SyntheticBiLevel(torch.utils.data.Dataset):
                 fruit_count += 2
             placeholder_words.append(f'mytoken{color_count}')
             color_count += 2
+        logger.info(f'placeholder_words: {placeholder_words}')
 
         placeholder_words = np.split(np.array(placeholder_words), num_placeholder_words*num_placeholder_groups)
         placeholder_words_prompt_args = np.transpose(np.split(np.array(placeholder_words), num_placeholder_words), (1,0,2))
+        logger.info(f'placeholder_words: {placeholder_words}')
+        logger.info(f'placeholder_words_prompt_args: {placeholder_words_prompt_args}')
 
         assert len(placeholder_words_prompt_args) == len(ground_truth_prompt_args), (len(placeholder_words_prompt_args), len(ground_truth_prompt_args))
         for placeholder_words_prompt_arg in placeholder_words_prompt_args:
             assert len(placeholder_words_prompt_arg) == num_placeholder_words, (placeholder_words_prompt_arg, num_placeholder_words)
         
+        ### Augment the ph_words to align with the generated images (one pair of ph_words per image)
+        ### Note that the images are augmented by num_data_per_prompt,
+        ###      thus for one unique ph_words pair, there are num_data_per_prompt images, 
+        ###      thus needs to augment ph_words by num_data_per_prompt
         self.ph_words_all = []
         for ind in range(num_placeholder_words):
             curr_ph_words = []
             for placeholder_words_prompt_arg in placeholder_words_prompt_args:
                 curr_ph_words.append(placeholder_words_prompt_arg[ind])
             self.ph_words_all.extend([curr_ph_words] * num_data_per_prompt)
+        logger.info(f'self.ph_words_all: {self.ph_words_all}')
 
         self.placeholder_words_prompt_args = placeholder_words_prompt_args
         unique_ph_words = [] # [['mytoken0', 'mytoken1'], ['mytoken2', 'mytoken3']]
@@ -359,6 +427,7 @@ class SyntheticBiLevel(torch.utils.data.Dataset):
             for placeholder_words_prompt_arg in self.placeholder_words_prompt_args:
                 curr_ph_words.append(placeholder_words_prompt_arg[ind])
             unique_ph_words.append([''.join(word) for word in curr_ph_words])
+        logger.info(f'unique_ph_words: {unique_ph_words}')
 
         blip_fruit_for_each_ph = defaultdict(list)
         assert len(unique_ph_words) == len(self.blip_fruits), (len(unique_ph_words), len(self.blip_fruits), unique_ph_words, self.blip_fruits)
@@ -366,19 +435,24 @@ class SyntheticBiLevel(torch.utils.data.Dataset):
             ph_fruit = unique_ph_words[i][0]
             blip_fruit = self.blip_fruits[i]
             blip_fruit_for_each_ph[ph_fruit].append(blip_fruit)
+        logger.info(f'blip_fruit_for_each_ph: {blip_fruit_for_each_ph}')
 
         common_blip_fruit_for_each_ph = {}
         for ph_fruit in blip_fruit_for_each_ph:
             blip_fruit_counter = Counter(blip_fruit_for_each_ph[ph_fruit])
             blip_common_fruit = blip_fruit_counter.most_common(1)[0][0]
             common_blip_fruit_for_each_ph[ph_fruit] = blip_common_fruit
+        logger.info(f'common_blip_fruit_for_each_ph: {common_blip_fruit_for_each_ph}')
 
         self.blip_fruits = [common_blip_fruit_for_each_ph[ph_pair[0]] for ph_pair in unique_ph_words]
         assert len(unique_ph_words) == len(self.blip_fruits), (len(unique_ph_words), len(self.blip_fruits), unique_ph_words, self.blip_fruits)
-
+        logger.info(f'self.blip_fruits: {self.blip_fruits}')
 
         self.num_data_copies = num_data_copies
         self.num_data_per_prompt = num_data_per_prompt
+
+        logger.info('Finish checking __init__ for SyntheticBiLevel\n')
+        #########################################################################################################
 
     def __len__(self):
         return len(self.images) * self.num_data_copies
@@ -399,7 +473,14 @@ class SyntheticBiLevel(torch.utils.data.Dataset):
         blip_color = self.blip_colors[item//self.num_data_per_prompt]
         blip_fruit = self.blip_fruits[item//self.num_data_per_prompt]
 
-        return {'image': image, 'prompt': prompt, 'gt_prompt': self.gt_prompts[item//self.num_data_per_prompt], 'clip_feature': clip_feature, 'blip_color': blip_color, 'blip_fruit': blip_fruit}
+        return {
+            'image': image, 
+            'prompt': prompt, 
+            'gt_prompt': self.gt_prompts[item//self.num_data_per_prompt], 
+            'clip_feature': clip_feature, 
+            'blip_color': blip_color, 
+            'blip_fruit': blip_fruit
+        }
 
 
 class SyntheticBiLevelEval(SyntheticBiLevel):
@@ -422,7 +503,7 @@ class SyntheticBiLevelEval(SyntheticBiLevel):
         self.color_template1 = 'a photo of the color {}'
         self.color_template2 = '{}'
         
-        self.val_batch_size = 4
+        self.val_batch_size = 4 ### Here defines how much val smaples per prompt
         self.all_gt_colors = [word_pair[1] for word_pair in self.gt_word_pairs]
         self.all_ph_colors = [word_pair[1] for word_pair in self.ph_word_pairs]
         self.all_colors = [word_pair[1] for word_pair in ref_dataset.unique_gt_words]
@@ -444,6 +525,8 @@ class SyntheticBiLevelEval(SyntheticBiLevel):
         gt_prompt = self.full_template.format(*gt_word_pair)
         prompt = self.full_template.format(*ph_word_pair)
 
+        ### Here defines the number of color samples per evaluation - col num of the 
+        ### The number is randomly sampled
         random.seed(item)
         assert len(self.all_gt_colors) == len(self.all_ph_colors), (len(self.all_gt_colors), len(self.all_ph_colors), self.all_gt_colors, self.all_ph_colors)
         if item < self.val_batch_size:

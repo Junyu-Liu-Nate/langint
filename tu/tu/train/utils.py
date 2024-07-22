@@ -33,7 +33,7 @@ def update_cfg_slurm(cfg, log_dir):
     if slurm_job_id is not None:
         job_info_path = os.path.join(job_info_dir, f'{slurm_job_id}.json')
         if os.path.exists(job_info_path):
-            assert slurm_job_name == 'bash' or slurm_job_name is None, slurm_job_name
+            # assert slurm_job_name == 'bash' or slurm_job_name is None, slurm_job_name
             logger.warning('should only happen in interactive session')
             count = 1
             while os.path.exists(job_info_path):
