@@ -49,7 +49,7 @@ class BaseTrainer:
         self.title = title
         self.checkpoint_dir = checkpoint_dir
 
-    def compute_loss_terms(self, out, data, module_key=None, writer=None) -> Dict:
+    def terms(self, out, data, module_key=None, writer=None) -> Dict:
         if self.module_key is None:
             raise NotImplementedError()
         return {k: v(out=out, data=data, writer=writer) for k, v in self.loss_modules.items()}
@@ -179,6 +179,7 @@ class BaseTrainer:
 
     def load_checkpoint(self, path):
         state_dict = torch.load(path)
+        # #!!! Note: Need to comment this out in training!!!
         # self.it = state_dict['it'] # we want iteration to start at 0 again actually
         logging.info(f'resume from it: {self.it}')
         old_lr = {}
@@ -204,13 +205,15 @@ def load_checkpoint(trainer, cfg, path):
         return -1
     with open(os.path.abspath(os.path.join(path, '../../cfg.json')), 'r') as f:
         checkpoint_cfg = json.load(f)
-    _ = check_cfg_consistency(cfg, checkpoint_cfg, ignore_keys={'log_dir', 'runtime.*', 'training.*', 'trainer.*'})
+    # _ = check_cfg_consistency(cfg, checkpoint_cfg, ignore_keys={'log_dir', 'runtime.*', 'training.*', 'trainer.*'})
+    _ = check_cfg_consistency(cfg, checkpoint_cfg, ignore_keys={'log_dir', 'runtime.*', 'training.*', 'trainer.*', 'title'})
     epoch = trainer.load_checkpoint(path)['epoch']
     return epoch
 
 
 def train_loops(print_every, visualize_every, checkpoint_every, eval_every,
                 cfg, trainer, train_loader, val_loader, max_it=None, max_epoch=None, epoch=-1):
+    print('Check in train_loops')
     if os.getenv('DEBUG') == '1' and dist.is_initialized():
         for k in sorted(trainer.module_keys):  # must sort!! otherwise deadlock
             check_ddp_consistency(trainer.modules[k])

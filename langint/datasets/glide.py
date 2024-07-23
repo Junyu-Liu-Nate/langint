@@ -124,6 +124,66 @@ def deepfloyd_sample_prompts(prompts: List[str], num_repeats=4, model=None, proc
     del pipeline
     return torch.stack([TF.to_tensor(image) * 2 - 1 for image in images_all]), blip_common_colors, blip_common_fruits, images_all
 
+### Used for held-out inference, load image samples and pass through BLIP to obtain lable
+def load_samples_blip(prompts: List[str], num_repeats=4, model=None, processor=None, blip_fruit_q=None, blip_color_q=None):
+    images_all: List[Image.Image] = []
+    blip_common_fruits = []
+    blip_common_colors = []
+
+    samples_path = '/users/ljunyu/data/ljunyu/code/concept/langint-train-two/cache/deepfloyd_img'
+    images_all = load_samples_as_PIL(samples_path)
+
+    for prompt_idx, prompt in enumerate(prompts):
+        images = images_all[prompt_idx*num_repeats : (prompt_idx+1)*num_repeats]
+
+        if model is not None:
+            blip_fruits = []
+            blip_colors = [] # blip process the images here
+            for image_i in range(len(images)):
+                image = images[image_i]
+                assert image.mode == 'RGB', image.mode
+
+                inputs = processor(image, blip_fruit_q, return_tensors="pt").to("cuda", torch.float16)
+                blip_out = model.generate(**inputs)
+                blip_fruits.append(processor.decode(blip_out[0], skip_special_tokens=True))
+
+                inputs = processor(image, blip_color_q, return_tensors="pt").to("cuda", torch.float16)
+                blip_out = model.generate(**inputs)
+                blip_colors.append(processor.decode(blip_out[0], skip_special_tokens=True))
+            blip_fruit_counter = Counter(blip_fruits)
+            blip_common_fruit = blip_fruit_counter.most_common(1)[0][0]
+            blip_common_fruits.append(blip_common_fruit)
+
+
+            blip_color_counter = Counter(blip_colors)
+            blip_common_color = blip_color_counter.most_common(1)[0][0]
+            blip_common_colors.append(blip_common_color)
+    
+    if model is not None:
+        assert len(prompts) == len(blip_common_colors) == len(blip_common_fruits), (len(prompts), len(blip_common_colors), len(blip_common_fruits))
+
+    return torch.stack([TF.to_tensor(image) * 2 - 1 for image in images_all]), blip_common_colors, blip_common_fruits, images_all
+
+
+def load_samples_as_PIL(samples_path):
+    # List all files in the folder
+    files = [f for f in os.listdir(samples_path) if f.endswith('.png')]
+    
+    # Sort files based on the first 'xx' numerically
+    files.sort(key=lambda x: int(x.split('_')[0]))
+    
+    # Load images using PIL and add them to a list
+    images = []
+    for filename in files:
+        img_path = os.path.join(samples_path, filename)
+        try:
+            with Image.open(img_path) as img:
+                images.append(img.copy())  # Use copy to avoid closing the file reference
+        except IOError:
+            print(f"Error opening image: {img_path}")
+    
+    return images
+
 def cache_deepfloyd_samples(prompts: List[str], num_repeats=4) -> torch.Tensor:
     cache_dir = 'cache/deepfloyd'
     image_paths_all = []
@@ -238,7 +298,11 @@ class SyntheticBiLevel(torch.utils.data.Dataset):
             unique_prompts.append(prompt)
         logger.info(f'unique_prompts: {unique_prompts}')
         self.gt_prompts: List[str] = unique_prompts
-        self.images, self.blip_colors, self.blip_fruits, pil_images = deepfloyd_sample_prompts(unique_prompts, num_repeats=num_data_per_prompt, model=model, processor=processor, blip_fruit_q=blip_fruit_question, blip_color_q=blip_color_question)   
+        
+        ### !!! Currently hardcoded to load pregenerated images (for heldout inference)
+        # self.images, self.blip_colors, self.blip_fruits, pil_images = deepfloyd_sample_prompts(unique_prompts, num_repeats=num_data_per_prompt, model=model, processor=processor, blip_fruit_q=blip_fruit_question, blip_color_q=blip_color_question)   
+        self.images, self.blip_colors, self.blip_fruits, pil_images = load_samples_blip(unique_prompts, num_repeats=num_data_per_prompt, model=model, processor=processor, blip_fruit_q=blip_fruit_question, blip_color_q=blip_color_question)
+        
         # logger.info(f'After deepfloyd_sample_prompts, self.images: {self.images}')
         logger.info(f'After deepfloyd_sample_prompts, self.blip_colors: {self.blip_colors}')
         logger.info(f'After deepfloyd_sample_prompts, self.blip_fruits: {self.blip_fruits}')
